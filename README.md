@@ -17,15 +17,15 @@ This project processes lecture PDFs, splits them into logical sections, summariz
 
 ## Setup
 
-1. **Clone the repository** and install dependencies (if any).
+1. **Clone the repository** 
 
 2. **Install required libraries**:
     ```bash
     pip install google-generativeai
     ```
 3. **Ensure you have access to the Google Gemini API** and have your API key ready. Use links below to get started:
-   https://aistudio.google.com/welcome
-   https://aistudio.google.com/apikey
+   - https://aistudio.google.com/welcome
+   - https://aistudio.google.com/apikey
 
 4. **Create a `config.py` file** in the project root with your Google Gemini API key:
     ```python
@@ -45,7 +45,7 @@ This project processes lecture PDFs, splits them into logical sections, summariz
 ## Output
 
 - Sectioned lecture content is saved as a timestamped JSON file.
-- Flashcards are saved as CSV files (one for full text, one for summaries).
+- Flashcards are saved as CSV files (one for full text read by LLM, one for summaries made by the model).
 
 ## Notes
 
