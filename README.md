@@ -21,7 +21,7 @@ This project processes lecture PDFs, splits them into logical sections, summariz
 
 2. **Install required libraries**:
     ```bash
-    pip install google-generativeai
+    pip install google-genai
     ```
 3. **Ensure you have access to the Google Gemini API** and have your API key ready. Use links below to get started:
    - https://aistudio.google.com/welcome
