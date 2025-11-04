@@ -8,91 +8,139 @@ from google import genai
 from google.genai.errors import ClientError, ServerError
 from config import API_KEY
 
-# Set your PDF file path here
-# FILE_PATH = r'C:\Users\Marek\Desktop\studia_magisterka\semestr 1\analiza danych w naukach o ziemi\wykłady\W_merged.pdf'
-FILE_PATH = r'C:\Users\Marek\Desktop\studia_magisterka\semestr 1\geostatystyka\wykłady\GiAD_merged_p2.pdf'
+
+FILE_PATH = r''
+
+OUTPUT_DIR = 'output'
+MAX_RETRIES = 5
+RETRY_DELAY_SECONDS = 60
 
 PROMPT_PARSE = """
 W załączniku znajduje się wykład z zajęć w postaci pliku PDF.
 Twoim zadaniem jest:
 - Przeczytać cały dokument, łącznie z tekstem na zdjęciach (użyj OCR).
-- Na podstawie treści i tematyki oddzielić wykład na logiczne części, gdzie każda ma maksymalnie 1200 słów.
+- Na podstawie treści i tematyki oddzielić wykład na logiczne części, gdzie każda ma maksymalnie 1200 słów i łącznie obejmą materiał z CAŁEGO dokumentu.
+- W pierwszej linii odpowiedzi, którą wygenerujesz, umieścić informację na ile sekcji podzieliłeś wykład, w formacie "Podzielono na X sekcji". 
+Chodzi o łączną liczbę sekcji, która pozwoli optymalnie objąć materiał z całego dokumentu, a nie ile wygenerujesz w tej odpowiedzi (maksymalnie 10). 
 - Dla każdego slajdu zawierającego obraz (mapę, wykres, diagram), krótko opisz, co ten obraz przedstawia, np. "Slajd 64 pokazuje diagram semiwariogramu z zaznaczonymi komponentami: nugget, sill, range".
 - Dla każdej sekcji wygenerować podsumowanie informacji zawartych w tej części (do 800 słów) oraz pełny tekst.
-- W pierwszej linii odpowiedzi, którą wygenerujesz, umieścić informację na ile sekcji podzieliłeś wykład, w formacie "Podzielono na X sekcji".
-Chodzi o łączną liczbę sekcji całego dokumentu, a nie ile wygenerujesz w tej odpowiedzi (maksymalnie 10).
-- Zinterpretuj także wzory matematyczne i zapisz je w formacie MathJax (czyli np. \( a^2 + b^2 = c^2 \) ). Jeśli wzory są nieczytelne (np. na skanach), spróbuj odtworzyć ich znaczenie na podstawie kontekstu. Zadbaj o poprawną składnię MathJax, nadającą się do użycia np. w Anki.
+- Zinterpretuj także wzory matematyczne i zapisz je w formacie MathJax (czyli np. \\( a^2 + b^2 = c^2 \\) ). Jeśli wzory są nieczytelne (np. na skanach), spróbuj odtworzyć ich znaczenie na podstawie kontekstu. Zadbaj o poprawną składnię MathJax, nadającą się do użycia np. w Anki.
+- Dla każdej sekcji wygenerować podsumowanie, pełny tekst oraz listę kluczowych koncepcji.
 
 Zwracaj sekcje w następującym formacie:
 
 Section: <numer>
 Title: <tytuł sekcji>
-Slides: <numery slajdów należące do tej sekcji>
+Slides: <numery slajdów>
 Summary:
-<podsumowanie sekcji – max 800 słów>
-
+<podsumowanie sekcji>
+KeyConcepts:
+- Lista kluczowych, fundamentalnych definicji, wzorów i zasad z tej sekcji. Skup się na wiedzy, która jest niezbędna do dalszego zrozumienia tematu. Np. "Wzór na dystans Euklidesowy", "Definicja efektu samorodkowego (nugget)", "Zasada działania algorytmu KNN".
 FullText:
-<pełny tekst sekcji – max 1200 słów>
+<pełny tekst sekcji>
 
 Jeśli podział będzie dłuższy niż 10 sekcji, zatrzymaj się na sekcji 10 – późniejsze sekcje wygeneruję w osobnym zapytaniu.
 """
 
 PROMPT_CONTINUE = """
-Kontynuuj z następnymi 10 sekcjami (analogiczny format jak poprzednio). 
+Kontynuuj z następnymi sekcjami, które nie zostały stworzone w poprzedniej wiadomości (analogiczny format jak poprzednio). 
 """
 
 PROMPT_GENERATE_FLASHCARDS = """
-Chcę, abyś stworzył talię fiszek z tekstu, który udostępnię w następnym prompcie.
+Wciel się w rolę doświadczonego dydaktyka i eksperta od nauk kognitytywnych. Twoim zadaniem jest stworzenie talii fiszek na podstawie dostarczonego tekstu. Celem jest stworzenie narzędzi do aktywnego przypominania, które maksymalizują głębokie zrozumienie i długoterminowe zapamiętywanie, a nie tylko testują powierzchowną znajomość samego tekstu źródłowego.
 
-Instrukcje tworzenia talii fiszek:
-- Fiszki powinny być proste, jasne i skoncentrowane na najważniejszych informacjach tekstu.
-- Pytanie powinno być jak najkrótsze i wymagać aktywnego przypomnienia sobie odpowiedzi. Odpowiedź powinna zawierać wyjaśnienie.
-  - ŹLE: "Jaka metoda poprawia jakość estymatorów z drzewa, jest metodą samowsporną i nazywana jest 'zbiorową mądrością'?" ; "Bagging"
-- Używaj prostego i bezpośredniego języka.
-- Fiszki mają być wygenerowane w formie CSV z kolumnami pytanie i odpowiedź (tylko te kolumny). Separatorem ma być średnik (;).
-- Fiszki powinny wyczerpująco opisywać zadany tekst, jednocześnie nie powtarzając się.
-- Fiszki powinny być w języku polskim.
-- Jeśli w tekście pojawiają się wzory, umieść je w odpowiedziach w formacie MathJax (np. \( a^2 + b^2 = c^2 \) ).
-- Ignoruj informacje nieistotne merytorycznie (np. dane organizacyjne, nazwiska, które nie są związane z kluczową teorią).
-- Jeśli pytanie dotyczy elementu wizualnego (mapy, wykresu), zaznacz to w pytaniu i podaj numer slajdu, np. "[PYTANIE WIZUALNE, slajd 57]".
+- Struktura Danych Wejściowych
+- Otrzymasz tekst, który może zawierać dwie części:
+  1. KeyConcepts: Lista kluczowych, fundamentalnych definicji, wzorów i zasad z tej sekcji, które student MUSI zapamiętać.
+  2. FullText: Pełny kontekst wyjaśniający te koncepcje.
 
-Teraz stwórz fiszki na podstawie poniższego tekstu. W swojej odpowiedzi nie umieszczaj żadnych dodatkowych informacji, tylko tabelę z fiszkami.
+- Główne Zadania
+1.  Stwórz fiszki dla KAŻDEGO elementu z listy KeyConcepts. Mają to być precyzyjne pytania testujące znajomość definicji, wzoru lub podstawowej zasady.
+2.  Przeanalizuj FullText i stwórz dodatkowe fiszki, które testują ZROZUMIENIE. Nie powtarzaj pytań z KeyConcepts, ale rozszerzaj je, pytając o ich znaczenie i zastosowanie.
+
+- Zasady Tworzenia Wysokiej Jakości Fiszki
+
+A. Styl i Struktura Pytania:
+- Pytanie powinno być jak najkrótsze, proste, jasne i skoncentrowane na najważniejszych informacjach. Musi wymagać aktywnego przypomnienia sobie odpowiedzi.
+- Odpowiedź powinna być zwięzła, ale zawierać kompletne wyjaśnienie.
+- Priorytetyzuj pytania typu "Jak działa...?", "Dlaczego...?", "Jaki jest cel...?", "Jaki problem rozwiązuje...?" oraz "Czym się różni...?".
+- Jeśli w tekście jest przykład liczbowy lub studium przypadku, stwórz fiszkę o OGÓLNEJ ZASADZIE, którą ten przykład ilustruje.
+- Jeśli w tekście znajduje się lista, stwórz OSOBNE pytanie dla każdego ważnego elementu, pytając o jego funkcję lub cel.
+
+B. Czego Należy Unikać:
+- UNIKAJ ZŁYCH PYTAŃ: Pytanie nie może sugerować ani zawierać odpowiedzi.
+  - PRZYKŁAD ZŁEJ PRAKTYKI: ŹLE: "Jaka metoda poprawia jakość estymatorów z drzewa, jest metodą samowsporną i nazywana jest 'zbiorową mądrością'?" ; "Bagging"
+- UNIKAJ PYTAŃ O LISTY: Nie twórz pytań w stylu "Wymień X...", "Podaj Y rodzajów...".
+- UNIKAJ FAKTÓW TRYWIALNYCH: Nie pytaj o konkretne wartości liczbowe (np. R^2=0.84), parametry ((0, 0, 500)), nazwy własne czy wyniki pochodzące z pojedynczych, ilustracyjnych przykładów w tekście.
+- UNIKAJ INFORMACJI NIEISTOTNYCH: Ignoruj informacje, które nie mają wartości merytorycznej z perspektywy studenta (dane organizacyjne, nazwiska niezwiązane z kluczową teorią, detale zadań projektowych).
+
+Przykłady Dobrej i Złej Praktyki
+- Przykład 1 (Listy):
+  - ŹLE: Wymień 4 skale pomiarowe atrybutów.
+  - LEPIEJ: Czym charakteryzuje się skala pomiarowa nominalna i podaj jej przykład. ORAZ Jaka jest kluczowa różnica między skalą interwałową a ilorazową?
+
+- Przykład 2 (Dane z przykładów):
+  - ŹLE: Jaka była wartość R^2 dla modelu ratingu w przykładzie Cereals?
+  - LEPIEJ: Co interpretujemy za pomocą współczynnika determinacji R² w modelu regresji i co oznacza jego wysoka wartość?
+
+- Przykład 3 (Fakty fundamentalne vs trywialne):
+  - ŹLE: Jakie RMSE uzyskano dla Modelu 0 (średnia)? (Trywialny, nietransferowalny fakt)
+  - DOBRZE: Jaki jest wzór na standaryzację danych i dlaczego jest ona ważnym krokiem w PCA? (Fundamentalny, transferowalny fakt)
+
+Wymagania Techniczne i Formatowanie
+- Język: Fiszki muszą być w języku polskim.
+- Format Wyjściowy: Fiszki mają być wygenerowane w formie CSV z dokładnie dwiema kolumnami: `pytanie` i `odpowiedź`.
+- Separator: Separatorem kolumn musi być średnik (;).
+- KRYTYCZNA ZASADA: Treść pól 'pytanie' i 'odpowiedź' NIGDY nie może zawierać średników (;), nawet jeśli jest to gramatycznie poprawne. Każdy średnik uszkodzi plik. Jeśli odpowiedź wymaga wyliczenia, ZAWSZE używaj tagów HTML<ul>i<li>. Na przykład:<ul><li>Punkt pierwszy</li><li>Punkt drugi</li></ul>.
+- Wzory Matematyczne: Wszystkie wzory muszą być umieszczone w formacie MathJax (np. \( a^2 + b^2 = c^2 \) ).
+- Formatowanie Tekstu: Do formatowania tekstu, takiego jak pogrubienie lub kursywa, używaj wyłącznie tagów HTML (np. <b>pogrubienie</b>, <i>kursywa</i>). Nie używaj formatowania Markdown, ponieważ nie jest ono obsługiwane.
+- Bloki Kodu: Wszystkie fragmenty kodu MUSZĄ być umieszczone wewnątrz tagów<pre><code>...</code></pre>. Nie używaj potrójnych backticków (```).
+- Pełne pokrycie: Fiszki powinny wyczerpująco opisywać zadany tekst, jednocześnie nie powtarzając się.
+
+Teraz, działając jako ekspert dydaktyczny, stwórz fiszki na podstawie poniższego tekstu. W swojej odpowiedzi nie umieszczaj żadnych dodatkowych informacji, tylko i wyłącznie tabelę z fiszkami w formacie CSV.
 """
 
 PROMPT_GENERATE_ADVANCED_FLASHCARDS = """
-Twoim zadaniem jest stworzenie zaawansowanej talii fiszek z udostępnionego tekstu, który jest podsumowaniem całego wykładu. Fiszki te mają testować głębsze zrozumienie, zdolność do syntezy i porównywania koncepcji.
+- Rola i Główny Cel
+- Twoim zadaniem jest stworzenie ZAAWANSOWANEJ talii fiszek z udostępnionego tekstu, który jest podsumowaniem całego wykładu. W przeciwieństwie do fiszek podstawowych, które testują znajomość pojedynczych koncepcji, te fiszki mają testować głębsze zrozumienie, zdolność do syntezy i porównywania koncepcji.
 
-**Instrukcje Ogólne:**
-- Pytanie powinno być zwięzłe i prowokować do myślenia. Odpowiedź powinna być wyczerpująca i dobrze wyjaśniać zagadnienie.
+Instrukcje Ogólne
+- Pytanie powinno być zwięzłe i prowokować do myślenia, a nie tylko odtwarzania faktów.
+- Odpowiedź powinna być wyczerpująca, dobrze ustrukturyzowana i jasno wyjaśniać zagadnienie.
 - Unikaj pytań, na które odpowiedź to jedno słowo.
-- Używaj formatu CSV z separatorem w postaci średnika (;).
-- Używaj formatu MathJax dla wzorów.
 - Jeśli pytanie dotyczy elementu wizualnego (mapy, wykresu), zaznacz to w pytaniu i podaj numer slajdu, np. "[PYTANIE WIZUALNE, slajd 57]".
 
-**Kategorie Pytań do Wygenerowania:**
-Wygeneruj fiszki z następujących kategorii, aby zapewnić różnorodność i głębię nauki:
+- Kategorie Pytań do Wygenerowania
+- Wygeneruj fiszki z następujących kategorii, aby zapewnić różnorodność i głębię nauki:
+  1. Pytania Porównawcze/Syntetyzujące:
+     - Mają na celu porównanie dwóch lub więcej koncepcji, metod lub narzędzi.
+     - Powinny pytać o podobieństwa, różnice, wady i zalety.
+     - Przykład: "Porównaj mechanizm działania Random Forest i Gradient Boosting, wskazując na kluczowe różnice w budowie drzew i celu uczenia."
 
-1.  **Pytania Porównawcze/Syntetyzujące:**
-    -   Mają na celu porównanie dwóch lub więcej koncepcji, metod lub narzędzi.
-    -   Powinny pytać o podobieństwa, różnice, wady i zalety.
-    -   Przykład: "Porównaj mechanizm działania Random Forest i Gradient Boosting, wskazując na kluczowe różnice w budowie drzew i celu uczenia."
+  2. Pytania Koncepcyjne/Wyjaśniające ("Dlaczego?"):
+     - Mają na celu sprawdzenie zrozumienia przyczyn i mechanizmów.
+     - Powinny zaczynać się od "Wyjaśnij, dlaczego...", "W jaki sposób...", "Jaki problem rozwiązuje...".
+     - Przykład: "Wyjaśnij, dlaczego modele oparte na drzewach decyzyjnych nie potrafią ekstrapolować i jakie ma to praktyczne konsekwencje w analizie danych przestrzennych."
 
-2.  **Pytania Koncepcyjne/Wyjaśniające ("Dlaczego?"):**
-    -   Mają na celu sprawdzenie zrozumienia przyczyn i mechanizmów.
-    -   Powinny zaczynać się od "Wyjaśnij, dlaczego...", "W jaki sposób...", "Jaki problem rozwiązuje...".
-    -   Przykład: "Wyjaśnij, dlaczego modele oparte na drzewach decyzyjnych nie potrafią ekstrapolować i jakie ma to praktyczne konsekwencje w analizie danych przestrzennych."
+  3. Pytania Praktyczne/Zastosowanie (Oparte na przykładach z wykładu):
+     - Mają na celu połączenie teorii z konkretnymi przykładami omówionymi w materiale, jeśli takie występują
+     - Przykład: "Opisz, jak w przykładzie z danymi kolarskimi wykorzystano regresję logistyczną i macierz błędów do zbudowania i oceny klasyfikatora wysiłku tlenowego/beztlenowego."
 
-3.  **Pytania Praktyczne/Zastosowanie (Oparte na przykładach z wykładu):**
-    -   Mają na celu połączenie teorii z konkretnymi przykładami omówionymi w materiale.
-    -   Powinny odnosić się do analizy smogu, danych kolarskich, funkcji sinc itp.
-    -   Przykład: "Opisz, jak w przykładzie z danymi kolarskimi wykorzystano regresję logistyczną i macierz błędów do zbudowania i oceny klasyfikatora wysiłku tlenowego/beztlenowego."
-
-Przykład:
+- Przykład
 Pytanie;Odpowiedź
-Porównaj kryteria informacyjne AIC i BIC.;Oba kryteria równoważą dopasowanie modelu (\( \ln(L) \)) i jego złożoność (liczbę parametrów \( k \)). Różnią się karą: w AIC jest stała (2), a w BIC zależy od liczby danych (\( \ln(n) \)). Sprawia to, że BIC jest bardziej "krytyczny" i preferuje prostsze modele, podczas gdy AIC jest lepszy w wyborze modelu o najlepszych zdolnościach predykcyjnych.
+Porównaj kryteria informacyjne AIC i BIC.;Oba kryteria równoważą dopasowanie modelu \( ln(L) )) i jego złożoność (liczbę parametrów \( k \)). Różnią się karą: w AIC jest stała (2), a w BIC zależy od liczby danych (\( ln(n) \)). Sprawia to, że BIC jest bardziej "krytyczny" i preferuje prostsze modele, podczas gdy AIC jest lepszy w wyborze modelu o najlepszych zdolnościach predykcyjnych.
 Wyjaśnij, dlaczego w algebrze map konieczne jest skalowanie wartości przed użyciem niektórych funkcji odległości?;Ponieważ funkcje odległości, takie jak dystans Euklidesowy, są wrażliwe na skalę zmiennych. Jeśli jedna cecha (np. współrzędna geograficzna) ma znacznie większy zakres wartości niż inna, zdominuje ona obliczenia odległości, prowadząc do błędnych wyników. Skalowanie (np. normalizacja) sprowadza wszystkie cechy do wspólnego zakresu, zapewniając im równy wkład.
 
-Teraz stwórz zaawansowane fiszki na podstawie poniższego tekstu. W swojej odpowiedzi nie umieszczaj żadnych dodatkowych informacji, tylko tabelę z fiszkami.
+- Wymagania Techniczne i Formatowanie
+- Język: Fiszki muszą być w języku polskim.
+- Format Wyjściowy: Fiszki mają być wygenerowane w formie CSV z dokładnie dwiema kolumnami: `pytanie` i `odpowiedź`.
+- Separator: Separatorem kolumn musi być średnik (;).
+- Wzory Matematyczne: Wszystkie wzory muszą być umieszczone w formacie MathJax (np. \( a^2 + b^2 = c^2 \) ).
+- Formatowanie Tekstu: Do formatowania tekstu, takiego jak pogrubienie lub kursywa, używaj wyłącznie tagów HTML (np. <b>pogrubienie</b>, <i>kursywa</i>). Nie używaj formatowania Markdown.
+- KRYTYCZNA ZASADA: Treść pól 'pytanie' i 'odpowiedź' NIGDY nie może zawierać średników (;), nawet jeśli jest to gramatycznie poprawne. Każdy średnik uszkodzi plik. Jeśli odpowiedź wymaga wyliczenia, ZAWSZE używaj tagów HTML<ul> i <li>. Na przykład:<ul><li>Punkt pierwszy</li><li>Punkt drugi</li></ul>.
+- Bloki Kodu: Wszystkie fragmenty kodu MUSZĄ być umieszczone wewnątrz tagów<pre><code>...</code></pre>. Nie używaj potrójnych backticków (```).
+
+Teraz stwórz zaawansowane fiszki na podstawie poniższego tekstu. W swojej odpowiedzi nie umieszczaj żadnych dodatkowych informacji, tylko i wyłącznie tabelę z fiszkami w formacie CSV.
 """
 
 
@@ -100,166 +148,331 @@ def get_genai_client():
     return genai.Client(api_key=API_KEY)
 
 def upload_pdf(client, file_path):
+    print(f"Wysyłanie pliku: {file_path}...")
     return client.files.upload(file=file_path)
 
 def create_chat(client, model="gemini-2.5-flash-preview-05-20"):
     return client.chats.create(model=model)
 
 def parse_slide_range(slide_str):
+    if not slide_str: return []
     slides = []
     for part in slide_str.split(','):
         part = part.strip()
         if '-' in part:
-            start, end = map(int, part.split('-'))
-            slides.extend(range(start, end + 1))
+            try:
+                start, end = map(int, part.split('-'))
+                slides.extend(range(start, end + 1))
+            except ValueError:
+                continue
         else:
-            slides.append(int(part))
+            try:
+                slides.append(int(part))
+            except ValueError:
+                continue
     return slides
+
 
 def parse_sections(text):
     sections = []
-    raw_sections = re.split(r'\nSection:\s*(\d+)', text)
-    for i in range(1, len(raw_sections), 2):
-        sec_num = int(raw_sections[i])
-        content = raw_sections[i + 1]
-        title_match = re.search(r'Title:\s*(.+)', content)
-        slides_match = re.search(r'Slides:\s*(.+)', content)
-        summary_match = re.search(r'Summary:\s*\n(.+?)\nFullText:', content, re.DOTALL)
-        fulltext_match = re.search(r'FullText:\s*\n(.+)', content, re.DOTALL)
+    raw_section_blocks = re.split(r'\nSection:\s*(\d+)', text)
+
+    for i in range(1, len(raw_section_blocks), 2):
+        sec_num = int(raw_section_blocks[i])
+        content = raw_section_blocks[i + 1]
+
+        title_match = re.search(r'Title:\s*(.*?)\n', content, re.DOTALL)
+        slides_match = re.search(r'Slides:\s*(.*?)\n', content, re.DOTALL)
+        summary_match = re.search(r'Summary:\s*(.*?)\nKeyConcepts:', content, re.DOTALL)
+        keyconcepts_match = re.search(r'KeyConcepts:\s*(.*?)\nFullText:', content, re.DOTALL)
+        fulltext_match = re.search(r'FullText:\s*(.*)', content, re.DOTALL)
+
         sections.append({
             "id": sec_num,
             "title": title_match.group(1).strip() if title_match else "",
-            "slides": parse_slide_range(slides_match.group(1)) if slides_match else [],
+            "slides": parse_slide_range(slides_match.group(1).strip() if slides_match else ""),
             "summary": summary_match.group(1).strip() if summary_match else "",
-            "text": fulltext_match.group(1).strip() if fulltext_match else ""
+            "key_concepts": keyconcepts_match.group(1).strip() if keyconcepts_match else "",
+            "full_text": fulltext_match.group(1).strip() if fulltext_match else ""
         })
     return sections
 
+
 def save_sections(sections):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
-    with open(f'output/sections_{timestamp}.json', 'w', encoding='utf-8-sig') as f:
+    filepath = os.path.join(OUTPUT_DIR, f'sections_{timestamp}.json')
+    with open(filepath, 'w', encoding='utf-8-sig') as f:
         json.dump(sections, f, ensure_ascii=False, indent=4)
+    print(f"Zapisano sekcje w pliku: {filepath}")
 
-def load_sections(path):
-    with open(path, 'r', encoding='utf-8-sig') as f:
-        return json.load(f)
 
-def generate_flashcards(client, text, prompt, retries=3, delay=10):
-    for attempt in range(retries):
+def save_flashcards(response, filename):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    filepath = os.path.join(OUTPUT_DIR, filename)
+    with open(filepath, 'w', encoding='utf-8-sig') as f:
+        f.write(response + '\n')
+    print(f"Zapisano fiszki w pliku: {filepath}")
+
+
+def transform_to_csv(responses):
+    all_lines = []
+    for response in responses:
+        if not response:
+            continue
+
+        lines = response.strip().split('\n')
+        for line in lines:
+            # Ignoruj puste linie lub linie z nagłówkiem, jeśli model je zwróci
+            if ';' in line and 'pytanie;odpowiedź' not in line.lower():
+                # Każda linia jest najpierw korygowana przez post-processing
+                corrected_line = post_process_flashcard_line(line)
+                all_lines.append(corrected_line)
+
+    return '\n'.join(all_lines)
+
+
+def process_pdf_and_generate_sections(client, file_path):
+    chat = create_chat(client)
+    file = upload_pdf(client, file_path)
+
+    print("Wysyłanie początkowego promptu do analizy PDF...")
+    first_response = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            first_response = chat.send_message([PROMPT_PARSE, file])
+            if not first_response or not getattr(first_response, "text", None):
+                raise ServerError("Otrzymano pustą odpowiedź od modelu.")
+            break
+        except (ClientError, ServerError) as e:
+            print(f"Błąd API przy pierwszym zapytaniu (próba {attempt + 1}/{MAX_RETRIES}): {e}")
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(RETRY_DELAY_SECONDS)
+            else:
+                raise RuntimeError("Nie udało się uzyskać początkowej odpowiedzi od modelu.")
+
+    print(f"Otrzymano pierwszą odpowiedź:\n{first_response.text[:150]}...\n")
+
+    n_sections_match = re.search(r'Podzielono na (\d+) sekcji', first_response.text)
+    if not n_sections_match:
+        raise ValueError(f"Nie udało się odczytać liczby sekcji z odpowiedzi: {first_response.text}")
+    n_sections = int(n_sections_match.group(1))
+    print(f"Dokument został podzielony na {n_sections} sekcji.")
+
+    all_responses = [first_response.text]
+    num_processed_sections = len(re.findall(r'\nSection:', first_response.text))
+
+    while num_processed_sections < n_sections:
+        print(f"Pobieranie kolejnych sekcji (pobrano {num_processed_sections}/{n_sections})...")
+        response = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = chat.send_message(PROMPT_CONTINUE)
+                if not response or not getattr(response, "text", None):
+                    raise ServerError(f"Otrzymano pustą odpowiedź od modelu przy kontynuacji.")
+                break
+            except (ClientError, ServerError) as e:
+                print(f"Błąd API przy kontynuacji (próba {attempt + 1}/{MAX_RETRIES}): {e}")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAY_SECONDS)
+                else:
+                    print("Nie udało się pobrać dalszych sekcji. Przetwarzam dotychczasowe dane.")
+                    response = None
+                    break
+
+        if response is None: break
+
+        print(f"Otrzymano kolejną odpowiedź:\n{response.text[:150]}...\n")
+        all_responses.append(response.text)
+        num_processed_sections += len(re.findall(r'\nSection:', response.text))
+
+    sections = []
+    for text in all_responses:
+        sections.extend(parse_sections(text))
+    save_sections(sections)
+    return sections
+
+
+def _generate_flashcards_with_retry(client, text, prompt):
+    """Wewnętrzna funkcja pomocnicza z logiką ponawiania prób."""
+    for attempt in range(MAX_RETRIES):
         try:
             flashcard_response = client.models.generate_content(
                 model="gemini-2.5-flash-preview-05-20",
                 contents=prompt + text,
             )
-            time.sleep(delay)
-            return flashcard_response.text
-        except ClientError as e:
-            print(f"ClientError: {e}")
-            print("Wystąpił błąd podczas generowania fiszek. Spróbuję ponownie za minutę...")
-            print(f"Sekcja dla której nie zostały wygenerowane fiszki:\n{text[:100]}...\n")
-            time.sleep(60)
-    raise RuntimeError(f"Nie udało się wygenerować fiszek po {retries} próbach.")
+            time.sleep(5)
+            if not flashcard_response or not getattr(flashcard_response, "text", None):
+                print(f"Błąd treści (próba {attempt + 1}/{MAX_RETRIES}): Otrzymano pustą odpowiedź od modelu.")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAY_SECONDS)
+                    continue
+                else:
+                    return ""
 
-def save_flashcards(response, filename):
-    if not os.path.exists('output'):
-        os.makedirs('output')
-    filename = os.path.join('output', filename)
-    with open(filename, 'w', encoding='utf-8-sig') as f:
-        f.write(response + '\n')
+            response_text = flashcard_response.text
+            if has_acceptable_format(response_text):
+                return response_text
+            else:
+                print(f"Błąd formatu (próba {attempt + 1}/{MAX_RETRIES}): Otrzymano nieprawidłowy format CSV.")
+                print(f"Fragment błędnej odpowiedzi: {response_text[:200]}...")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAY_SECONDS)
+                    continue
+                else:
+                    print(f"Nie udało się uzyskać poprawnego formatu po {MAX_RETRIES} próbach.")
+                    return ""
 
-def transform_to_csv(responses):
-    return '\n'.join(
-        line
-        for response in responses
-        for line in response.strip().split('\n')
-        if ';' in line and 'pytanie' not in line.lower()
-    )
-
-def process_pdf_and_generate_sections(file_path):
-    client = get_genai_client()
-    chat = create_chat(client)
-    file = upload_pdf(client, file_path)
-    first_response = chat.send_message([PROMPT_PARSE, file])
-    print(f"Otrzymano pierwszą odpowiedź od modelu:\n{first_response.text[:100]}\n\n")
-    n_sections = first_response.text.split("\n")[0].strip().split()[-2]
-    try:
-        n_sections = int(n_sections)
-    except ValueError:
-        raise ValueError(f"Nie udało się odczytać liczby sekcji z odpowiedzi: {first_response.text}")
-    finished = n_sections <= 10
-    further_responses = []
-    i = 2
-    while not finished:
-        for _ in range(5):
-            try:
-                response = chat.send_message(PROMPT_CONTINUE)
-                break
-            except (ClientError, ServerError) as e:
-                time.sleep(60)
-                continue
-        else:
-            raise RuntimeError("Nie udało się uzyskać odpowiedzi od modelu po 5 próbach.")
-        print(f"Otrzymano {i} odpowiedź od modelu:\n{response.text[:100]}\n\n")
-        further_responses.append(response.text)
-        if not response or not getattr(response, "text", None):
-            raise RuntimeError(f"Pusta odpowiedź od LLM. Obiekt response: {response}")
-        finished = n_sections - i * 10 <= 0
-        i += 1
-    responses = [first_response.text] + further_responses
-    sections = []
-    for text in responses:
-        sections.extend(parse_sections(text))
-    save_sections(sections)
-    return sections
-
-def generate_basic_flashcards(sections):
-    client = get_genai_client()
-    print("Rozpoczynam generowanie fiszek...")
-    flashcards_responses_og_text = []
-    for section in sections:
-        for _ in range(5):
-            try:
-                flashcard_response = generate_flashcards(client, section['text'], PROMPT_GENERATE_FLASHCARDS)
-                flashcards_responses_og_text.append(flashcard_response)
-                print(f"Udało się wygenerować fiszki dla sekcji {section['id'], section['text'][:100]}")
-                break
-            except ServerError as e:
-                print(f"Błąd podczas generowania fiszek dla sekcji {section['id'], section['text'][:100]}: {e}")
-                time.sleep(80)
-                continue
-
-    return transform_to_csv(flashcards_responses_og_text)
+        except (ClientError, ServerError) as e:
+            print(f"Błąd API (próba {attempt + 1}/{MAX_RETRIES}): {e}")
+            if attempt < MAX_RETRIES - 1:
+                print(f"Ponowna próba za {RETRY_DELAY_SECONDS} sekund...")
+                time.sleep(RETRY_DELAY_SECONDS)
+            else:
+                print(f"Nie udało się wygenerować fiszek po {MAX_RETRIES} próbach API dla tekstu: {text[:100]}...")
+                return ""
+    return ""
 
 
-def generate_synthesis_flashcards(sections):
-    print("Rozpoczynam generowanie złożonych fiszek...")
-    client = get_genai_client()
-    # 1. Połącz wszystkie podsumowania w jeden tekst
-    full_summary = "\n\n---\n\n".join([section['summary'] for section in sections])
-
-    synthesis_response_text = []
-    for _ in range(5):
-        try:
-            synthesis_response_text = generate_flashcards(client, full_summary, PROMPT_GENERATE_ADVANCED_FLASHCARDS)
-            print("Udało się wygenerować złożone fiszki.")
-            break
-        except ServerError as e:
-            print(f"Błąd podczas generowania złożonych fiszek: {e}")
-            time.sleep(80)
+def generate_basic_flashcards(client, sections):
+    print("\nRozpoczynam generowanie fiszek podstawowych...")
+    flashcards_responses = []
+    for i, section in enumerate(sections):
+        if not section.get('key_concepts') and not section.get('full_text'):
+            print(f"Pominięto sekcję {section['id']}, ponieważ jest pusta.")
             continue
-    # synthesis_response_text = generate_flashcards(client, full_summary, PROMPT_GENERATE_ADVANCED_FLASHCARDS)
 
-    return transform_to_csv([synthesis_response_text])
+        input_text = (
+            f"KeyConcepts:\n{section['key_concepts']}\n\n"
+            f"---\n\n"
+            f"FullText:\n{section['full_text']}"
+        )
+
+        print(f"Generowanie fiszek dla sekcji {section['id']}: '{section['title']}' ({i + 1}/{len(sections)})...")
+        response = _generate_flashcards_with_retry(client, input_text, PROMPT_GENERATE_FLASHCARDS)
+        flashcards_responses.append(response)
+        if response:
+            print(f"-> Sukces dla sekcji {section['id']}.")
+        else:
+            print(f"-> NIEPOWODZENIE dla sekcji {section['id']}.")
+
+    return transform_to_csv(flashcards_responses)
+
+
+def generate_synthesis_flashcards(client, sections):
+    print("\nRozpoczynam generowanie fiszek zaawansowanych (syntetyzujących)...")
+
+    CHUNK_SIZE = 7
+    all_synthesis_responses = []
+
+    summaries = [s['summary'] for s in sections if s.get('summary')]
+
+    for i in range(0, len(summaries), CHUNK_SIZE):
+        chunk = summaries[i:i + CHUNK_SIZE]
+        full_summary_chunk = "\n\n---\n\n".join(chunk)
+
+        if not full_summary_chunk.strip():
+            continue
+
+        print(f"Generowanie fiszek zaawansowanych dla paczki {i // CHUNK_SIZE + 1}...")
+        response = _generate_flashcards_with_retry(client, full_summary_chunk, PROMPT_GENERATE_ADVANCED_FLASHCARDS)
+
+        if response:
+            all_synthesis_responses.append(response)
+            print(f"-> Sukces dla paczki {i // CHUNK_SIZE + 1}.")
+        else:
+            print(f"-> NIEPOWODZENIE dla paczki {i // CHUNK_SIZE + 1}.")
+
+    if not all_synthesis_responses:
+        print("Nie udało się wygenerować żadnych fiszek zaawansowanych.")
+        return ""
+
+    return transform_to_csv(all_synthesis_responses)
+
+
+def has_acceptable_format(text: str, max_invalid_starts: int = 4) -> bool:
+    if not text or not text.strip():
+        return False
+
+    lines = text.strip().split('\n')
+    if not lines:
+        return False
+
+    answer_without_question_count = 0
+    for line in lines:
+        if line.strip().lower().startswith('odpowiedź;'):
+            answer_without_question_count += 1
+
+    if answer_without_question_count > max_invalid_starts:
+        print(
+            f"Walidacja nieudana: znaleziono {answer_without_question_count} linii zaczynających się od 'odpowiedź;' (limit: {max_invalid_starts}).")
+        return False
+    return True
+
+
+def post_process_flashcard_line(line: str) -> str:
+    parts = line.split(';')
+
+    question = ""
+    answer = ""
+
+    if len(parts) == 1:
+        question = parts[0].strip()
+    elif len(parts) == 2:
+        question = parts[0].strip()
+        answer = parts[1].strip()
+    elif len(parts) > 2:
+        question = parts[0].strip()
+        answer = ";".join(parts[1:]).strip()
+
+    fields_to_process = [question, answer]
+    processed_fields = []
+
+    for field in fields_to_process:
+        if not isinstance(field, str):
+            field = str(field)
+
+        # **text** -> <b>text</b>
+        field = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', field)
+        # *text* -> <i>text</i>
+        field = re.sub(r'(?<!\*)\*(\S(.*?)\S)\*(?!\*)', r'<i>\1</i>', field)
+        # `text` -> <code>text</code>
+        field = re.sub(r'`(.*?)`', r'<code>\1</code>', field)
+        processed_fields.append(field)
+
+    question, answer = processed_fields
+    # czyszczenie zduplikowanych tagów <code> w <pre>
+    answer = answer.replace('<pre><code><code>', '<pre><code>').replace('</code></code></pre>', '</code></pre>')
+    return f"{question};{answer}"
 
 def main():
-    sections = process_pdf_and_generate_sections(FILE_PATH)
-    time.sleep(20)
-    basic_flashcards = generate_basic_flashcards(sections)
-    advanced_flashcards = generate_synthesis_flashcards(sections)
-    flashcards_combined = basic_flashcards + "\n" + advanced_flashcards
+    client = get_genai_client()
 
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
-    save_flashcards(flashcards_combined, f'flashcards_{timestamp}.csv')
+    # Krok 1: Przetwarzanie PDF i podział na sekcje
+    sections = process_pdf_and_generate_sections(client, FILE_PATH)
+    if not sections:
+        print("Nie udało się wygenerować żadnych sekcji. Zakończono program.")
+        return
+
+    # Krok 2: Generowanie fiszek podstawowych
+    basic_flashcards_csv = generate_basic_flashcards(client, sections)
+
+    # Krok 3: Generowanie fiszek zaawansowanych
+    advanced_flashcards_csv = generate_synthesis_flashcards(client, sections)
+
+    # Krok 4: Połączenie i zapisanie wyników
+    flashcards_combined = basic_flashcards_csv
+    if advanced_flashcards_csv:
+        if basic_flashcards_csv:
+            flashcards_combined += "\n"
+        flashcards_combined += advanced_flashcards_csv
+
+    if flashcards_combined.strip():
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
+        save_flashcards(flashcards_combined, f'flashcards_{timestamp}.csv')
+        print("\nZakończono pomyślnie! Fiszki zostały zapisane.")
+    else:
+        print("\nNie udało się wygenerować żadnych fiszek.")
 
 
 if __name__ == "__main__":
